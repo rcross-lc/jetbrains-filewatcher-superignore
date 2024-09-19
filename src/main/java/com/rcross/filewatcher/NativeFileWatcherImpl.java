@@ -13,7 +13,6 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.PathManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileTypes.FileTypeManager;
-import com.intellij.openapi.fileTypes.impl.FileTypeManagerImpl;
 import com.intellij.openapi.util.*;
 import com.intellij.openapi.util.io.OSAgnosticPathUtil;
 import com.intellij.openapi.util.text.StringUtil;
@@ -26,15 +25,10 @@ import com.intellij.util.TimeoutUtil;
 import com.intellij.util.io.BaseDataReader;
 import com.intellij.util.io.BaseOutputReader;
 import com.intellij.util.system.CpuArch;
-import org.apache.tools.ant.Project;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.TestOnly;
-import org.jetbrains.jps.model.JpsModel;
-import org.jetbrains.jps.model.impl.JpsModelImpl;
-import org.jetbrains.jps.service.JpsServiceManager;
-import com.intellij.openapi.roots.ui.configuration.ProjectSettingsService;
-import com.intellij.openapi.project.ProjectManager;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -50,6 +44,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+@ApiStatus.Internal
 public class NativeFileWatcherImpl extends PluggableFileWatcher {
     private static final Logger LOG = Logger.getInstance(NativeFileWatcherImpl.class);
 
@@ -103,13 +98,6 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
             try {
                 startupProcess(false);
                 LOG.info("Native file watcher is operational.");
-
-//                ProjectManager p = ProjectManager.getInstance();
-//                ProjectSettingsService s = ProjectSettingsService.getInstance(p.getDefaultProject());
-//                p.getDefaultProject().
-
-
-//                model.getGlobal().getFileTypesConfiguration().getIgnoredPatternString().toString();
             }
             catch (IOException e) {
                 LOG.warn(e.getMessage());
@@ -132,12 +120,6 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
     @Override
     public boolean isSettingRoots() {
         return isOperational() && mySettingRoots.get() > 0;
-    }
-
-    @SuppressWarnings("UnstableApiUsage")
-    @Override
-    public void setWatchRoots(@NotNull List<String> recursive, @NotNull List<String> flat) {
-        doSetWatchRoots(recursive, flat, false);
     }
 
     public void setWatchRoots(@NotNull List<String> recursive, @NotNull List<String> flat, boolean restart) {
@@ -477,7 +459,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
     }
 
     private boolean isRepetition(String path) {
-        // debouncing subsequent notifications (happens on copying of large files); this reduces path checks at least 20% on Windows
+        // debouncing sequential notifications (happens on copying of large files); this reduces path checks at least 20% on Windows
         synchronized (myLastChangedPaths) {
             for (int i = 0; i < myLastChangedPaths.length; ++i) {
                 int last = myLastChangedPathIndex - i - 1;
