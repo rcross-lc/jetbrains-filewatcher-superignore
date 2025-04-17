@@ -1,7 +1,7 @@
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.9.21"
-    id("org.jetbrains.intellij.platform") version "2.0.1"
+//    id("org.jetbrains.kotlin.jvm") version "1.9.21"
+    id("org.jetbrains.intellij.platform") version "2.5.0"
 }
 
 group = "com.rcross"
@@ -11,17 +11,19 @@ repositories {
     mavenCentral()
     intellijPlatform {
         defaultRepositories()
+        jetbrainsRuntime()
     }
 }
 
 // Configure Gradle IntelliJ Plugin
 // Read more: https://plugins.jetbrains.com/docs/intellij/tools-gradle-intellij-plugin.html
 intellijPlatform {
+    buildSearchableOptions = false
 }
 dependencies {
     intellijPlatform {
-        intellijIdeaCommunity("2024.3.1.1", useInstaller = false)
-        instrumentationTools()
+        intellijIdeaCommunity("2025.1", useInstaller = false)
+        jetbrainsRuntime()
     }
 }
 
@@ -31,9 +33,9 @@ tasks {
         sourceCompatibility = "21"
         targetCompatibility = "21"
     }
-    withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-        kotlinOptions.jvmTarget = "21"
-    }
+//    withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+//        kotlinOptions.jvmTarget = "21"
+//    }
 
     signPlugin {
         certificateChain.set(System.getenv("CERTIFICATE_CHAIN"))
