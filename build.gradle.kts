@@ -1,7 +1,6 @@
 plugins {
     id("java")
-//    id("org.jetbrains.kotlin.jvm") version "1.9.21"
-    id("org.jetbrains.intellij.platform") version "2.5.0"
+    id("org.jetbrains.intellij.platform") version "2.10.5"
 }
 
 group = "com.rcross"
@@ -22,7 +21,7 @@ intellijPlatform {
 }
 dependencies {
     intellijPlatform {
-        intellijIdeaCommunity("2025.1", useInstaller = false)
+        intellijIdea("2025.3")
         jetbrainsRuntime()
     }
 }
