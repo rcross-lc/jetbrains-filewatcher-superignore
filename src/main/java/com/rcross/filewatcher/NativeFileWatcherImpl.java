@@ -3,44 +3,42 @@ package com.rcross.filewatcher;
 // Copyright 2000-2024 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 //package com.intellij.openapi.vfs.impl.local;
 
-import com.intellij.ReviseWhenPortedToJDK;
 import com.intellij.execution.process.OSProcessHandler;
 import com.intellij.execution.process.ProcessOutputTypes;
 import com.intellij.ide.IdeCoreBundle;
-import com.intellij.ide.ui.IdeUiService;
+import com.intellij.ide.actions.RevealFileAction;
 import com.intellij.notification.NotificationListener;
-import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.PathManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileTypes.FileTypeManager;
-import com.intellij.openapi.util.*;
+import com.intellij.openapi.util.Key;
+import com.intellij.openapi.util.NlsContexts;
+import com.intellij.openapi.util.Pair;
+import com.intellij.openapi.util.ShutDownTracker;
 import com.intellij.openapi.util.io.OSAgnosticPathUtil;
 import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.vfs.CharsetToolkit;
 import com.intellij.openapi.vfs.local.FileWatcherNotificationSink;
 import com.intellij.openapi.vfs.local.PluggableFileWatcher;
-import com.intellij.openapi.vfs.newvfs.ManagingFS;
 import com.intellij.util.SmartList;
 import com.intellij.util.TimeoutUtil;
 import com.intellij.util.io.BaseDataReader;
 import com.intellij.util.io.BaseOutputReader;
-import com.intellij.util.lang.JavaVersion;
 import com.intellij.util.system.CpuArch;
+import com.intellij.util.system.OS;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.TestOnly;
 
 import java.io.BufferedWriter;
-import java.io.File;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.text.Normalizer;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -72,20 +70,20 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
   private int myLastChangedPathIndex;
 
   @Override
-  public void initialize(@NotNull ManagingFS managingFS, @NotNull FileWatcherNotificationSink notificationSink) {
+  public void initialize(@NotNull FileWatcherNotificationSink notificationSink) {
     myNotificationSink = notificationSink;
 
-    boolean disabled = isDisabled();
+    var disabled = isDisabled();
     myExecutable = getExecutable();
 
     if (disabled) {
       LOG.info("Native file watcher is disabled");
     }
     else if (myExecutable == null) {
-      if (SystemInfo.isWindows || SystemInfo.isMac || SystemInfo.isLinux && (CpuArch.isIntel64() || CpuArch.isArm64())) {
+      if (OS.CURRENT == OS.Windows || OS.CURRENT == OS.macOS || OS.CURRENT == OS.Linux && (CpuArch.isIntel64() || CpuArch.isArm64())) {
         notifyOnFailure(IdeCoreBundle.message("watcher.exe.not.found"), null);
       }
-      else if (SystemInfo.isLinux) {
+      else if (OS.CURRENT == OS.Linux) {
         notifyOnFailure(IdeCoreBundle.message("watcher.exe.compile"), NotificationListener.URL_OPENING_LISTENER);
       }
       else {
@@ -93,8 +91,8 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
       }
     }
     else if (!Files.isExecutable(myExecutable)) {
-      String message = IdeCoreBundle.message("watcher.exe.not.exe", myExecutable);
-      notifyOnFailure(message, (notification, event) -> IdeUiService.getInstance().revealFile(myExecutable));
+      var message = IdeCoreBundle.message("watcher.exe.not.exe", myExecutable);
+      notifyOnFailure(message, (notification, event) -> RevealFileAction.openFile(myExecutable));
     }
     else {
       try {
@@ -124,8 +122,15 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
     return isOperational() && mySettingRoots.get() > 0;
   }
 
-  public void setWatchRoots(@NotNull List<String> recursive, @NotNull List<String> flat, boolean restart) {
-    doSetWatchRoots(recursive, flat, restart);
+  @Override
+  public void setWatchRoots(@NotNull List<String> recursive, @NotNull List<String> flat, boolean shuttingDown) {
+    if (shuttingDown) {
+      myIsShuttingDown = true;
+      shutdownProcess(false);
+    }
+    else {
+      doSetWatchRoots(recursive, flat, false);
+    }
   }
 
   /**
@@ -133,7 +138,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
    */
   protected boolean isDisabled() {
     if (Boolean.getBoolean(PROPERTY_WATCHER_DISABLED)) return true;
-    Application app = ApplicationManager.getApplication();
+    var app = ApplicationManager.getApplication();
     return app.isCommandLine() || app.isUnitTestMode();
   }
 
@@ -141,30 +146,16 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
    * Subclasses should override this method to provide a custom binary to run.
    */
   protected @Nullable Path getExecutable() {
-    String customPath = System.getProperty(PROPERTY_WATCHER_EXECUTABLE_PATH);
-    LOG.info("Executable path: " + customPath);
+    var customPath = System.getProperty(PROPERTY_WATCHER_EXECUTABLE_PATH);
     if (customPath != null) {
-      Path customFile = PathManager.findBinFile(customPath);
+      var customFile = PathManager.findBinFile(customPath);
       return customFile == null ? Path.of(customPath) : customFile;
     }
-
-    String name = null;
-    if (SystemInfo.isWindows && (CpuArch.isIntel64() || CpuArch.isArm64())) {
-      name = "fsnotifier.exe";
-    }
-    else if (SystemInfo.isMac) {
-      name = "fsnotifier";
-    }
-    else if (SystemInfo.isLinux && (CpuArch.isIntel64() || CpuArch.isArm64())) {
-      name = "fsnotifier";
-    }
-    if (name != null) {
-      Path file = PathManager.findBinFile(name);
-      if (file != null) {
-        return file;
-      }
-    }
-    return null;
+    var name =
+      OS.CURRENT == OS.Windows ? "fsnotifier.exe" :
+      OS.CURRENT == OS.macOS || OS.CURRENT == OS.Linux && (CpuArch.isIntel64() || CpuArch.isArm64()) ? "fsnotifier" :
+      null;
+    return name != null ? PathManager.findBinFile(name) : null;
   }
 
   /* internal stuff */
@@ -192,13 +183,13 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
     }
 
     LOG.info("Starting file watcher: " + myExecutable);
-    Process process = new ProcessBuilder(myExecutable.toAbsolutePath().toString()).start();
+    var process = new ProcessBuilder(myExecutable.toAbsolutePath().toString()).start();
     myProcessHandler = new MyProcessHandler(process, myExecutable.getFileName().toString());
     myProcessHandler.startNotify();
 
     if (restart) {
-      List<String> recursive = myRecursiveWatchRoots;
-      List<String> flat = myFlatWatchRoots;
+      var recursive = myRecursiveWatchRoots;
+      var flat = myFlatWatchRoots;
       if (recursive.size() + flat.size() > 0) {
         doSetWatchRoots(recursive, flat, true);
       }
@@ -244,7 +235,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
     myFlatWatchRoots = flat;
 
     List<String> ignored = new SmartList<>();
-    if (SystemInfo.isWindows) {
+    if (OS.CURRENT == OS.Windows) {
       recursive = screenUncRoots(recursive, ignored);
       flat = screenUncRoots(flat, ignored);
     }
@@ -266,8 +257,8 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
     }
     try {
       writeLine(ROOTS_COMMAND);
-      for (String path : recursive) writeLine(path);
-      for (String path : flat) writeLine('|' + path);
+      for (var path : recursive) writeLine(path);
+      for (var path : flat) writeLine('|' + path);
       writeLine("#");
     }
     catch (IOException e) {
@@ -277,8 +268,8 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
 
   private static List<String> screenUncRoots(List<String> roots, List<? super String> ignored) {
     List<String> filtered = null;
-    for (int i = 0; i < roots.size(); i++) {
-      String root = roots.get(i);
+    for (var i = 0; i < roots.size(); i++) {
+      var root = roots.get(i);
       if (OSAgnosticPathUtil.isUncPath(root)) {
         if (filtered == null) {
           filtered = new ArrayList<>(roots.subList(0, i));
@@ -294,7 +285,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
 
   private void writeLine(String line) throws IOException {
     if (LOG.isTraceEnabled()) LOG.trace("<< " + line);
-    MyProcessHandler processHandler = myProcessHandler;
+    var processHandler = myProcessHandler;
     if (processHandler != null) {
       processHandler.writeLine(line);
     }
@@ -309,7 +300,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
   }
 
   private static final Charset CHARSET =
-    SystemInfo.isWindows || SystemInfo.isMac ? StandardCharsets.UTF_8 : CharsetToolkit.getPlatformCharset();
+    OS.CURRENT == OS.Windows || OS.CURRENT == OS.macOS ? StandardCharsets.UTF_8 : CharsetToolkit.getPlatformCharset();
 
   private static final BaseOutputReader.Options READER_OPTIONS = new BaseOutputReader.Options() {
     @Override public BaseDataReader.SleepingPolicy policy() { return BaseDataReader.SleepingPolicy.BLOCKING; }
@@ -320,10 +311,8 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
   @SuppressWarnings("SpellCheckingInspection")
   private enum WatcherOp { GIVEUP, RESET, UNWATCHEABLE, REMAP, MESSAGE, CREATE, DELETE, STATS, CHANGE, DIRTY, RECDIRTY }
 
-  @ReviseWhenPortedToJDK(value = "21", description = "drop normalization")
   private final class MyProcessHandler extends OSProcessHandler {
     private final BufferedWriter myWriter;
-    private final boolean myNormalizePaths = SystemInfo.isMac && !JavaVersion.current().isAtLeast(21);
     private WatcherOp myLastOp;
     private final List<String> myLines = new ArrayList<>();
 
@@ -347,7 +336,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
     protected void notifyProcessTerminated(int exitCode) {
       super.notifyProcessTerminated(exitCode);
 
-      String message = "Watcher terminated with exit code " + exitCode;
+      var message = "Watcher terminated with exit code " + exitCode;
       if (myIsShuttingDown) LOG.info(message); else LOG.warn(message);
 
       myProcessHandler = null;
@@ -378,7 +367,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
           watcherOp = WatcherOp.valueOf(line);
         }
         catch (IllegalArgumentException e) {
-          String message = "Illegal watcher command: '" + line + "'";
+          var message = "Illegal watcher command: '" + line + "'";
           if (line.length() <= 20) message += " " + Arrays.toString(line.chars().toArray());
           LOG.error(message);
           return;
@@ -396,7 +385,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
         }
       }
       else if (myLastOp == WatcherOp.MESSAGE) {
-        String localized = Objects.requireNonNullElse(IdeCoreBundle.INSTANCE.messageOrNull(line), line); //NON-NLS
+        var localized = Objects.requireNonNullElse(IdeCoreBundle.messageOrNull(line), line); //NON-NLS
         LOG.warn(localized);
         notifyOnFailure(localized, NotificationListener.URL_OPENING_LISTENER);
         myLastOp = null;
@@ -418,15 +407,16 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
         }
       }
       else {
-        String path = StringUtil.trimEnd(line.replace('\0', '\n'), File.separator);  // unescape
+        @SuppressWarnings({"IO_FILE_USAGE", "UnnecessaryFullyQualifiedName"})
+        var path = StringUtil.trimEnd(line.replace('\0', '\n'), java.io.File.separator);  // unescape
         processChange(path, myLastOp);
         myLastOp = null;
       }
     }
 
     private void processRemap() {
-      Set<Pair<String, String>> pairs = new HashSet<>();
-      for (int i = 0; i < myLines.size() - 1; i += 2) {
+      var pairs = new HashSet<Pair<String, String>>();
+      for (var i = 0; i < myLines.size() - 1; i += 2) {
         pairs.add(Pair.create(myLines.get(i), myLines.get(i + 1)));
       }
       myNotificationSink.notifyMapping(pairs);
@@ -438,7 +428,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
     }
 
     private void processChange(String path, WatcherOp op) {
-      if (SystemInfo.isWindows && op == WatcherOp.RECDIRTY) {
+      if (OS.CURRENT == OS.Windows && op == WatcherOp.RECDIRTY) {
         myNotificationSink.notifyReset(path);
         return;
       }
@@ -446,10 +436,6 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
       if ((op == WatcherOp.CHANGE || op == WatcherOp.STATS) && isRepetition(path)) {
         if (LOG.isTraceEnabled()) LOG.trace("repetition: " + path);
         return;
-      }
-
-      if (myNormalizePaths) {
-        path = Normalizer.normalize(path, Normalizer.Form.NFC);
       }
 
       switch (op) {
@@ -465,10 +451,10 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
   private boolean isRepetition(String path) {
     // debouncing sequential notifications (happens on copying of large files); this reduces path checks at least 20% on Windows
     synchronized (myLastChangedPaths) {
-      for (int i = 0; i < myLastChangedPaths.length; ++i) {
-        int last = myLastChangedPathIndex - i - 1;
+      for (var i = 0; i < myLastChangedPaths.length; ++i) {
+        var last = myLastChangedPathIndex - i - 1;
         if (last < 0) last += myLastChangedPaths.length;
-        String lastChangedPath = myLastChangedPaths[last];
+        var lastChangedPath = myLastChangedPaths[last];
         if (lastChangedPath != null && lastChangedPath.equals(path)) {
           return true;
         }
@@ -485,7 +471,7 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
   @Override
   @TestOnly
   public void startup() throws IOException {
-    Application app = ApplicationManager.getApplication();
+    var app = ApplicationManager.getApplication();
     if (app == null || !app.isUnitTestMode()) throw new IllegalStateException();
 
     myIsShuttingDown = false;
@@ -496,17 +482,17 @@ public class NativeFileWatcherImpl extends PluggableFileWatcher {
   @Override
   @TestOnly
   public void shutdown() throws InterruptedException {
-    Application app = ApplicationManager.getApplication();
+    var app = ApplicationManager.getApplication();
     if (app == null || !app.isUnitTestMode()) throw new IllegalStateException();
 
-    MyProcessHandler processHandler = myProcessHandler;
+    var processHandler = myProcessHandler;
     if (processHandler != null) {
       myIsShuttingDown = true;
       shutdownProcess(true);
 
-      long t = System.currentTimeMillis();
+      var stopAt = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
       while (!processHandler.isProcessTerminated()) {
-        if (System.currentTimeMillis() - t > 15000) {
+        if (System.nanoTime() > stopAt) {
           throw new InterruptedException("Timed out waiting watcher process to terminate");
         }
         TimeoutUtil.sleep(100);
